@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>crypto price watch</title>
+    <link rel="stylesheet" href="./style.css">
+  </head>
+  <body>
+    <div id="app"></div>
+    <script>
+      (function () {
+        const app = document.getElementById('app');
+        const iconDown = 'images/icon-down.png';
+        const iconUp = 'images/icon-up.png';
+        let state = window.localStorage.getItem('cpw_state') ? JSON.parse(window.localStorage.getItem('cpw_state')) : {
+          reloadIntervalTime: 30000,
+          notifyOnPercentChange: 0.1,
+          btc: { pair: 'USD-BTC', price: 0 },
+          coin1: { pair: 'BTC-XMR', price: 0 },
+          coin2: { pair: '', price: 0 },
+          coin3: { pair: '', price: 0 },
+        };
+        const setState = newState => {
+          state = {...state, ...newState};
+          window.localStorage.setItem('cpw_state', JSON.stringify(state));
+          if (window.CPW_OPTIONS.verbose) { console.log('state: ', state) }
+        };
+        let tray = null;
+        let reloadInterval = null;
+        let status = '';
+        let isFetching = false;
+
+        const initTray = () => {
+          tray = new nw.Tray({
+            title: 'crypto price watch',
+            tooltip: 'crypto price watch',
+            icon: 'icon.png',
+          });
+          const trayMenu = new nw.Menu();
+          trayMenu.append(new nw.MenuItem({
+            type: 'normal',
+            label: 'exit',
+            click: () => {
+              window.NW_EXIT();
+            }
+          }));
+          tray.menu = trayMenu;
+          tray.on('click', () => {
+            window.NW_WIN.show();
+            setTimeout(() => {
+              window.NW_WIN.focus();
+            }, 100);
+          });
+          window.NW_WIN.setShowInTaskbar(false);
+        }
+
+        const updateTray = status => {
+          if (tray) {
+            window.NODE_FS.writeFileSync('icon-status.png', window.NODE_TEXT2PNG(status, {
+              textColor: 'white',
+              font: '30px monospace',
+              lineSpacing: 7,
+              padding: 7,
+            }));
+            tray.icon = 'icon-status.png';
+          }
+        }
+
+        const setReloadIntervalTime = newTimeMs => {
+          setState({reloadIntervalTime: newTimeMs});
+          if (reloadInterval) {
+            clearInterval(reloadInterval);
+          }
+          reloadInterval = setInterval(() => {
+            reloadTicker();
+          }, newTimeMs);
+        }
+
+        const getEndpoint = uri => {
+          return new Promise((resolve, reject) => {
+            fetch(uri)
+              .then(response => {
+                if (window.CPW_OPTIONS.verbose) { console.log('http:raw response: ', response) }
+                response.json().then(data => {
+                  resolve(data);
+                }).catch(error => reject(error));
+              }).catch(error => reject(error));
+          });
+        }
+
+        const showNotification = (title, msg, icon) => {
+          const notification = new Notification(title, {
+            icon: icon,
+            body: msg
+          });
+          notification.onclick = () => {
+            notification.close();
+            // window.NW_WIN.focus();
+          };
+        }
+
+        const formatPrice = rawPrice => {
+          if (rawPrice < 0.001) { return `${(rawPrice * 100000000).toFixed(0)}sat` }
+          if (rawPrice >= 0.001 && rawPrice <= 1) { return rawPrice.toFixed(5) }
+          if (rawPrice > 1) { return rawPrice.toFixed(2) }
+          return rawPrice.toFixed(8);
+        }
+
+        const formatCoinSymbol = coinSymbol => {
+          if (coinSymbol.substr(0, 3) === 'BTC') { return coinSymbol.substr(4) }
+          return coinSymbol;
+        }
+
+        const notifyOnChange = (coin, newPrice) => {
+          const change = Math.abs(newPrice - coin.price);
+          const changePercent = (change / (coin.price / 100)).toFixed(5);
+          const isChangeUp = (newPrice - coin.price) > 0;
+          if (changePercent >= state.notifyOnPercentChange) {
+            const msg = `${isChangeUp ? '+' : '-'} ${changePercent}%\n${isChangeUp ? '+' : '-'} ${formatPrice(change)}${change >= 0.001 ? coin.pair.split('-')[0] : ''}`
+// last: ${coin.price}\nnew: ${newPrice}`;
+            showNotification(`${coin.pair.split('-')[1]} ${isChangeUp ? 'UP' : 'DOWN'}`, msg, isChangeUp ? iconUp : iconDown);
+            // '&#129093;' : '&#129095;'
+          }
+        }
+
+        const getMarkets = () => {
+          return getEndpoint('https://bittrex.com/api/v1.1/public/getmarkets').then(data => {
+            return data.result.map(pair => {
+              return {
+                base: pair.BaseCurrency,
+                market: pair.MarketCurrency,
+              }
+            }).sort((a, b) => {
+              const symbolA = `${a.base}-${a.market}`;
+              const symbolB = `${b.base}-${b.market}`;
+              if (symbolA < symbolB) return -1;
+              if (symbolA > symbolB) return 1;
+              return 0;
+            });
+          });
+        }
+
+        const reloadTicker = () => {
+          if (isFetching) { return }
+          isFetching = true;
+          getEndpoint('https://www.bitstamp.net/api/ticker/').then(data => {
+            status = `BTC: ${data.last}$`;
+            notifyOnChange(state.btc, Number(data.last));
+            setState({btc: {pair: 'USD-BTC', price: Number(data.last)}});
+            if (!state.coin1.pair || (state.coin1.pair && state.coin1.pair.length === 0)) { return new Promise(r => r()) }
+            return getEndpoint(`https://bittrex.com/api/v1.1/public/getmarketsummary?market=${state.coin1.pair}`);
+          }).then(data => {
+            if (data && data.success) {
+              notifyOnChange(state.coin1, Number(data.result[0].Last));
+              setState({coin1: {pair: state.coin1.pair, price: Number(data.result[0].Last)}});
+              status += ` | ${formatCoinSymbol(state.coin1.pair)}: ${formatPrice(data.result[0].Last)}`;
+            }
+            if (!state.coin2.pair || (state.coin2.pair && state.coin2.pair.length === 0)) { return new Promise(r => r()) }
+            return getEndpoint(`https://bittrex.com/api/v1.1/public/getmarketsummary?market=${state.coin2.pair}`);
+          }).then(data => {
+            if (data && data.success) {
+              notifyOnChange(state.coin2, Number(data.result[0].Last));
+              setState({coin2: {pair: state.coin2.pair, price: Number(data.result[0].Last)}});
+              status += ` | ${formatCoinSymbol(state.coin2.pair)}: ${formatPrice(data.result[0].Last)}`;
+            }
+            if (!state.coin3.pair || (state.coin3.pair && state.coin3.pair.length === 0)) { return new Promise(r => r()) }
+            return getEndpoint(`https://bittrex.com/api/v1.1/public/getmarketsummary?market=${state.coin3.pair}`);
+          }).then(data => {
+            if (data && data.success) {
+              notifyOnChange(state.coin3, Number(data.result[0].Last));
+              setState({coin3: {pair: state.coin3.pair, price: Number(data.result[0].Last)}});
+              status += ` | ${formatCoinSymbol(state.coin3.pair)}: ${formatPrice(data.result[0].Last)}`;
+            }
+            isFetching = false;
+            updateTray(status);
+          }).catch(e => console.warn(e));
+        }
+
+        const renderWindow = () => {
+          getMarkets().then(pairs => {
+            const options = `<option value="">Empty</option>>` + pairs.map(p => `<option value="${p.base}-${p.market}">${p.base}-${p.market}</option>`).join('');
+            app.innerHTML = `
+              <div style="label">Coins</div>
+              <select id="coin1">${options}</select>
+              <select id="coin2">${options}</select>
+              <select id="coin3">${options}</select>
+              <div style="label">Reload time</div>
+              <select id="reloadTime">
+                <option value="10000">10s</option>
+                <option value="20000">20s</option>
+                <option value="30000">30s</option>
+                <option value="60000">1m</option>
+                <option value="120000">2m</option>
+                <option value="300000">5m</option>
+                <option value="600000">10m</option>
+                <option value="1800000">30m</option>
+                <option value="3600000">1m</option>
+              </select>
+              <div style="label">Alert on change (percentage)</div>
+              <input type="number" min="0" step="0.1" id="percentChange">
+            `;
+            document.getElementById('coin1').value = state.coin1.pair;
+            document.getElementById('coin2').value = state.coin2.pair;
+            document.getElementById('coin3').value = state.coin3.pair;
+            document.getElementById('reloadTime').value = state.reloadIntervalTime;
+            document.getElementById('percentChange').value = state.notifyOnPercentChange;
+            document.getElementById('percentChange').addEventListener('change', function () {
+              setState({notifyOnPercentChange: this.value});
+            });
+            [].forEach.call(document.getElementsByTagName('select'), el => {
+              el.addEventListener('change', function () {
+                if (this.id === 'reloadTime') {
+                  setReloadIntervalTime(this.value);
+                } else {
+                  setState({[this.id]: {pair: this.value, price: 0}});
+                }
+                reloadTicker();
+              });
+            });
+
+            reloadTicker();
+          }).catch(e => {
+            app.innerHTML = `
+              <div>error: ${e.message}</div>
+            `;
+          });
+        }
+
+        const init = () => {
+          initTray();
+          renderWindow();
+          reloadInterval = setInterval(() => {
+            reloadTicker();
+          }, state.reloadIntervalTime);
+        }
+
+        init();
+      })()
+    </script>
+  </body>
+</html>

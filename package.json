@@ -1,0 +1,32 @@
+{
+  "name": "crypto-price-watch",
+  "version": "0.1.0",
+  "author": "b3da.net",
+  "description": "crypto-price-watch",
+  "keywords": [
+    "cryptocurrency ticker"
+  ],
+  "main": "./gate.js",
+  "options": {
+    "verbose": false
+  },
+  "window": {
+    "width": 250,
+    "height": 170,
+    "title": "crypto price watch",
+    "icon": "./icon.png",
+    "show_in_taskbar": false,
+    "toolbar": true,
+    "frame": true,
+    "fullscreen": false,
+    "kiosk": false
+  },
+  "chromium-args": "--mixed-context",
+  "scripts": {
+    "nw": "../nwjs-sdk-v0.24.4-linux-x64/nw .",
+    "start": "cd dist && http-server && cd .."
+  },
+  "dependencies": {
+    "text2png": "^1.0.1"
+  }
+}
